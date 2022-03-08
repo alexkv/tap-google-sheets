@@ -11,7 +11,10 @@ setup(name='tap-google-sheets',
       install_requires=[
           'backoff==1.8.0',
           'requests==2.22.0',
-          'singer-python==5.12.2'
+          'singer-python==5.9.0',
+          'google-api-python-client==1.12.5',
+          'google-auth==1.23.0',
+          'google-auth-oauthlib==0.4.2',
       ],
       extras_require={
           'test': [

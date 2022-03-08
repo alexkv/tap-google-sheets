@@ -237,13 +237,14 @@ def get_sheet_metadata(sheet, spreadsheet_id, client):
     LOGGER.info('sheet_id = {}, sheet_title = {}'.format(sheet_id, sheet_title))
 
     stream_name = 'sheet_metadata'
-    stream_obj = STREAMS.get(stream_name)(client, spreadsheet_id)
-    api = stream_obj.api
-    sheet_title_encoded = urllib.parse.quote_plus(sheet_title)
-    sheet_title_escaped = re.escape(sheet_title)
-    path, _ = stream_obj.get_path(sheet_title_encoded)
+    stream_metadata = STREAMS.get(stream_name)
+    params = stream_metadata.get('params', {})
 
-    sheet_md_results = client.get(path=path, api=api, endpoint=sheet_title_escaped)
+    # GET sheet_metadata
+    sheet_md_results = client.request(endpoint=stream_name,
+                                      spreadsheet_id=spreadsheet_id,
+                                      sheet_title=sheet_title,
+                                      params=params)
     # sheet_metadata: 1st `sheets` node in results
     sheet_metadata = sheet_md_results.get('sheets')[0]
 
@@ -256,3 +257,60 @@ def get_sheet_metadata(sheet, spreadsheet_id, client):
         sheet_json_schema, columns = None, None
 
     return sheet_json_schema, columns
+
+
+def get_abs_path(path):
+    return os.path.join(os.path.dirname(os.path.realpath(__file__)), path)
+
+def get_schemas(client, spreadsheet_id):
+    schemas = {}
+    field_metadata = {}
+
+    for stream_name, stream_metadata in STREAMS.items():
+        schema_path = get_abs_path('schemas/{}.json'.format(stream_name))
+        with open(schema_path) as file:
+            schema = json.load(file)
+        schemas[stream_name] = schema
+        mdata = metadata.new()
+
+        # Documentation:
+        # https://github.com/singer-io/getting-started/blob/master/docs/DISCOVERY_MODE.md#singer-python-helper-functions
+        # Reference:
+        # https://github.com/singer-io/singer-python/blob/master/singer/metadata.py#L25-L44
+        mdata = metadata.get_standard_metadata(
+            schema=schema,
+            key_properties=stream_metadata.get('key_properties', None),
+            valid_replication_keys=stream_metadata.get('replication_keys', None),
+            replication_method=stream_metadata.get('replication_method', None)
+        )
+        field_metadata[stream_name] = mdata
+
+        if stream_name == 'spreadsheet_metadata':
+            params = stream_metadata.get('params', {})
+
+            # GET spreadsheet_metadata, which incl. sheets (basic metadata for each worksheet)
+            spreadsheet_md_results = client.request(endpoint=stream_name,
+                                                    spreadsheet_id=spreadsheet_id,
+                                                    params=params)
+
+            sheets = spreadsheet_md_results.get('sheets', [])
+
+            # Loop thru each worksheet in spreadsheet
+            for sheet in sheets:
+                # GET sheet_json_schema for each worksheet (from function above)
+                sheet_json_schema, columns = get_sheet_metadata(sheet, spreadsheet_id, client)
+
+                # SKIP empty sheets (where sheet_json_schema and columns are None)
+                if sheet_json_schema and columns:
+                    sheet_title = sheet.get('properties', {}).get('title')
+                    schemas[sheet_title] = sheet_json_schema
+                    sheet_mdata = metadata.new()
+                    sheet_mdata = metadata.get_standard_metadata(
+                        schema=sheet_json_schema,
+                        key_properties=['__sdc_row'],
+                        valid_replication_keys=None,
+                        replication_method='FULL_TABLE'
+                    )
+                    field_metadata[sheet_title] = sheet_mdata
+
+    return schemas, field_metadata
